@@ -29,6 +29,7 @@
 #include "virt_uart.h"
 #include "openamp_log.h"
 #include "DS18B20_REG.h"
+#include "DS18B20.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,7 +64,7 @@ __IO FlagStatus VirtUart0RxMsg = RESET;
 uint8_t VirtUart0ChannelBuffRx[MAX_BUFFER_SIZE];
 uint16_t VirtUart0ChannelRxSize = 0;
 
-volatile uint8_t wire_timeout = 0;
+//volatile uint8_t wire_timeout = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -100,9 +101,8 @@ void intToHexStr(uint8_t val, uint8_t *buff)
 	}
 }
 
-void wire1_delayUS(uint32_t delay)
+void DS18B20_delayUS(uint32_t delay)
 {
-	wire_timeout = 0;
 	delay *= 10; //Timer pre divider is set to 20 making a tick 0.1uS
 	if(delay > 1)
 	{
@@ -117,247 +117,24 @@ void wire1_delayUS(uint32_t delay)
 	while(htim5.Instance->CNT < delay);
 }
 
-typedef struct wire1_device
-{
-	uint64_t rom_code;
-	uint64_t address;
-	uint8_t power_mode;
-	uint16_t temperature;
-	uint8_t th_reg;
-	uint8_t tl_reg;
-	uint8_t config_reg;
-}wire1_device;
 //#define wire1_setZero()	(WIRE1_THERM_GPIO_Port->BSRR |= (WIRE1_THERM_Pin<<16))
-#define wire1_setZero()	(WIRE1_THERM_GPIO_Port->MODER |= (1<<28))
+void DS18B20_wire1_setZero(void)
+{
+	(WIRE1_THERM_GPIO_Port->MODER |= (1<<28));
+}
 //0x4000
 
 //#define wire1_setOne()  (WIRE1_THERM_GPIO_Port->BSRR |= (WIRE1_THERM_Pin))
-#define wire1_setOne()  (WIRE1_THERM_GPIO_Port->MODER &= ~(3<<28))
-
-#define wire1_read() ((WIRE1_THERM_GPIO_Port->IDR>>14)&0x1)
-
-#if 1
-void wire1_debugToggle(void)
+void DS18B20_wire1_setOne(void)
 {
-
-	for(int x=0; x<100; x++)
-	{
-		wire1_delayUS(1);
-		wire1_setZero();
-		wire1_delayUS(2);
-		wire1_setOne();
-	}
-}
-#endif
-
-uint8_t wire1_resetPulse(void)
-{
-	uint32_t master_rx_time = 0; //Track time in Master RX mode, 480us Min
-	uint8_t reading = 0;
-
-	//Send Wire1 reset pulse width for 480us min
-	wire1_setZero();
-	wire1_delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US);
-	wire1_setOne();
-
-
-	//Check for DS18B20 TX Presence response
-	wire1_delayUS(DS18B20_PRESENCE_PULSE_WAITS_MAX_US);
-	master_rx_time += DS18B20_PRESENCE_PULSE_WAITS_MAX_US;
-
-	reading = wire1_read();
-
-	//Delay 15us and Read again
-	//Check for DS18B20 TX Presence
-	wire1_delayUS(DS18B20_PRESENCE_PULSE_RESAMPLE_US);
-	master_rx_time += DS18B20_PRESENCE_PULSE_RESAMPLE_US;
-	reading <<= 1;
-	reading |= wire1_read();
-
-	//Wait for remaining Master RX mode Time
-	wire1_delayUS(DS18B20_RESET_PULSE_WIDTH_MIN_US-master_rx_time);
-
-	return reading;
+	(WIRE1_THERM_GPIO_Port->MODER &= ~(3<<28));
 }
 
-void wire1_sendBusStart(void)
+uint8_t DS18B20_wire1_read(void)
 {
-//Wait for 1us recovery time in case we just sent a bit
-	wire1_setOne();
-	while(wire1_read() == 0);	//Wait for RC and bus to go high
-	wire1_delayUS(DS18B20_SLOT_RECOVERY_US);
-	wire1_setZero();
-	wire1_delayUS(DS18B20_START_OF_SLOT_MIN_US);
-	wire1_setOne();
-
-}
-void wire1_sendBusBit(uint8_t bit)
-{
-	wire1_sendBusStart();
-	if(bit)
-	{
-		wire1_setOne();
-	}
-	else
-	{
-		wire1_setZero();
-	}
-	//Wait for DS18B20 Sample Time DS18B20_TIME_SLOT_MIN_US
-	wire1_delayUS(DS18B20_TIME_SLOT_MIN_US);
-	wire1_setOne();
+	return ((WIRE1_THERM_GPIO_Port->IDR>>14)&0x1);
 }
 
-uint8_t wire1_readBus(void)
-{
-	uint8_t reading = 0;
-	wire1_sendBusStart();
-	wire1_delayUS(SD18B20_MASTER_READ_SLOT_US-DS18B20_START_OF_SLOT_MIN_US);
-	reading = wire1_read();
-	wire1_delayUS(DS18B20_TIME_SLOT_MIN_US-SD18B20_MASTER_READ_SLOT_US);
-	return reading;
-}
-
-void wire1_sendBusCMD(uint8_t cmd)
-{
-	for(int x=0; x<DS18B20_CMD_BIT_SIZE; x++)
-	{
-		wire1_sendBusBit(cmd&1);
-		cmd >>=1;	//Right shift cmd
-	}
-}
-////Calculate CRC based on CRC_POLY of 100110001, BITS are LSB First so
-//__weak uint8_t wire1_calcCRC(uint8_t *message, uint8_t byteLen)	//Weak function as instead of slow bit wise loop we can override it to utilize CRC hw module
-//{
-//
-//	uint16_t crc_poly = ((uint8_t)DS18B20_CRC_POLYNOMIAL)<<8;
-//	uint16_t crc;
-//	uint8_t xor_op=0;
-//
-//	crc = (*message)<<8;
-//
-//	for(int x=0; x<byteLen; x++)
-//	{
-//		crc &=0xFF00;
-//		if(x+1 < byteLen)	//Add next message byte to end
-//		{
-//			crc |= *(message+x+1);
-//		}
-//
-//		for(int y = 0; y<8; y++)
-//		{
-//			if(crc & 0x8000)	//MSb of value is 1, we can apply CRC XOR operation
-//			{
-//				xor_op = 1;
-//			}
-//			crc <<=1;	//Shift over value
-//
-//			if(xor_op) //Since CRC poly MSb is always 1 and MSb of value is 1, XOR will always be 0! So we can shift left and XOR 8bits or poly with 8bits of value!
-//			{
-//				xor_op = 0;
-//				crc ^= crc_poly;
-//			}
-//		}
-//	}
-//	return (crc>>8);	//value should be CRC!
-//}
-////Calculate CRC based on CRC_POLY of 100110001, BITS are LSB First so
-__weak uint8_t wire1_calcCRC(uint8_t *message, uint8_t byteLen)	//Weak function as instead of slow bit wise loop we can override it to utilize CRC hw module
-{
-
-	uint16_t crc_poly = ((uint8_t)DS18B20_CRC_POLYNOMIAL)<<8;
-	uint16_t crc;
-
-	uint8_t xor_op=0;
-
-	crc = *(message+byteLen-1)<<8;
-	for(int x=byteLen-1; x>=0; x--)
-	{
-		crc &=0xFF00;
-		if(x > 0)	//Add next message byte to end
-		{
-			crc |= *(message+x-1);
-		}
-
-		for(int y = 0; y<8; y++)
-		{
-			if(crc & 0x8000)	//MSb of value is 1, we can apply CRC XOR operation
-			{
-				xor_op = 1;
-			}
-			crc <<=1;	//Shift over value
-
-			if(xor_op) //Since CRC poly MSb is always 1 and MSb of value is 1, XOR will always be 0! So we can shift left and XOR 8bits or poly with 8bits of value!
-			{
-				xor_op = 0;
-				crc ^= crc_poly;
-			}
-		}
-	}
-	return (crc>>8);	//value should be CRC!
-}
-
-uint8_t wire1_init(wire1_device *devices)
-{
-	uint64_t rom_code = 0;
-	uint64_t address = 0;
-	uint64_t address_contention = 0;
-	uint8_t  crc_value = 0;
-
-
-	uint8_t dev_cnt = 0;
-	uint8_t reading = 0;
-
-
-	uint8_t crc_cal = 0;
-
-	reading = wire1_resetPulse();
-	if(reading != 0)
-	{
-	 //No Device Detected
-		return 0;
-	}
-	do
-	{
-		wire1_sendBusCMD(DS18B20_CMD_SEARCH_ROM);
-		for(int x=0; x<DS18B20_ROM_CODE_BIT_SIZE; x++)
-		{
-			reading = wire1_readBus();	//Read TX Bit 0
-			reading <<= 1;
-			reading |= wire1_readBus();	//Read TX ~Bit 0
-			switch(reading)
-			{
-				case 0:	//"00" Bus contention, Two Devices different address bits
-					address_contention |= (uint64_t)1<<x;	//Store for later use, navigate 0 address first
-					break;
-				case 1:	//"01" Address 0 match
-					//Nothing to do as Address bits default to 0
-					break;
-				case 2:	//"10" Address 1 match
-					rom_code |= (uint64_t)1<<(DS18B20_ROM_CODE_BIT_SIZE-1-x);	//Store 1 in address, LSb first for CRC
-					address |= (uint64_t)1<<x;	//Store 1 in address, LSb as LSb
-					break;
-				case 3:	//"11" No Devices responded, maybe error in master TX bit?
-					return dev_cnt;
-				default:
-					break;
-			}
-			wire1_sendBusBit(((uint64_t)address>>x) & 1);
-		}
-		//got entire address!!
-		//Check CRC
-		crc_value = (uint8_t)rom_code; //Store message CRC
-		rom_code >>= 8;	//Shift out recv'd crc code TODO: Parameterize
-		crc_cal = wire1_calcCRC((uint8_t *)&rom_code, DS18B20_ADDRESS_BIT_SIZE/8);
-		if(crc_cal == crc_value)
-		{
-			devices->rom_code = rom_code<<8 | crc_value;
-			devices->address = address;
-			devices++;
-			dev_cnt++;
-		}
-	} while(dev_cnt < DS18B20_MAX_DEVICES);
-	return 1;
-}
 /* USER CODE END 0 */
 
 /**
@@ -409,19 +186,12 @@ int main(void)
   MX_TIM5_Init();
   MX_CRC2_Init();
   /* USER CODE BEGIN 2 */
-	//Enable Timer
-//	htim5.Instance->CR1 |= TIM_CR1_CEN;	//Free running clock to bypass 3us start delay -_-
-//  htim5.Instance->SR &= ~TIM_SR_UIF; //Reset UIF Flag before use to fix 2us irq trigger error?
-//  htim5.Instance->CR1 |= TIM_CR1_URS;
-//  htim5.Instance->DIER |= TIM_DIER_UIE;	//Enable TIM5 IRQ
-  //	//Enable TIM5 UE IRQ
-  //	htim5.Instance->DIER |= TIM_DIER_UIE;	//Enable TIM5 IRQ
-  ////	//Enable Timer, should be free running, so only first call has 3uS TIM star delay
+//Enable Timer
   //Free running TIM5 to bypass 3us start TIM delay -_-
   htim5.Instance->ARR = 0xFFFFFFFF;
   htim5.Instance->CR1 |= TIM_CR1_CEN;
   //Set WIRE1 GPIO as Input
-  wire1_setOne();
+  DS18B20_wire1_setOne();
   //Set WIRE1 GPIO Low when output
   WIRE1_THERM_GPIO_Port->BSRR |= (WIRE1_THERM_Pin<<16);
 
@@ -436,14 +206,22 @@ int main(void)
   	  Error_Handler();
   }
 
-  wire1_device dev[DS18B20_MAX_DEVICES] = {0};
+  DS18B20 dev[DS18B20_MAX_DEVICES] = {0};
+  DS18B20_BSP_FPTRS dev_fptrs = {
+		  &DS18B20_delayUS,
+		  &DS18B20_wire1_setZero,
+		  &DS18B20_wire1_setOne,
+		  &DS18B20_wire1_read
+  };
+  //Assign device specific function pointers
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	uint8_t ret = 0;
+	int8_t ret = 0;
 
 	OPENAMP_check_for_message();
 	if (VirtUart0RxMsg)
@@ -452,34 +230,34 @@ int main(void)
 		switch (VirtUart0ChannelBuffRx[0])
 		{
 		case '0' :
-			ret = wire1_resetPulse();
+			ret = DS18B20_resetPulse(dev);
 			uint8_t message0[] = "Send WIRE1 Reset:  ";
 			message0[sizeof(message0)-1] = ret+48;
 			VIRT_UART_Transmit(&huart0, message0, sizeof(message0));
 			break;
 
 		case '1' :
-			wire1_sendBusBit(1);
+			DS18B20_sendBusBit(dev, 1);
 			uint8_t message1[] = "Send WIRE1 One";
 			VIRT_UART_Transmit(&huart0, message1, sizeof(message1));
 			break;
 
 		case '2' :
-			wire1_sendBusBit(0);
+			DS18B20_sendBusBit(dev, 0);
 			uint8_t message2[] = "Send WIRE1 Zero";
 			VIRT_UART_Transmit(&huart0, message2, sizeof(message2));
 			break;
 
 		case '3' :
-			wire1_sendBusBit(0);
-			wire1_sendBusBit(1);
-			wire1_sendBusBit(0);
+			DS18B20_sendBusBit(dev, 0);
+			DS18B20_sendBusBit(dev, 1);
+			DS18B20_sendBusBit(dev, 0);
 			uint8_t message3[] = "Send WIRE1 Zero/One/Zero";
 			VIRT_UART_Transmit(&huart0, message3, sizeof(message3));
 			break;
 
 		case '4' :
-			wire1_debugToggle();
+			DS18B20_wire1_debugToggle(dev);
 			uint8_t message4[] = "Send debug toggle  ";
 			VIRT_UART_Transmit(&huart0, message4, sizeof(message4));
 			break;
@@ -488,15 +266,16 @@ int main(void)
 			uint8_t message_address[16];
 			uint8_t *msg_ptr = message_address;
 
-			ret = wire1_init(dev);
+			ret = DS18B20_init(dev, &dev_fptrs, DS18B20_MAX_DEVICES);
 			uint8_t message5[] = "Send wire1_init(): Num Dev = ";
 
 			intToHexStr(ret, msg_ptr);
 			VIRT_UART_Transmit(&huart0, message5, sizeof(message5));
 			VIRT_UART_Transmit(&huart0, message_address, 2);
 
-			if((ret > 0) && (ret != -1))
+			if(ret > 0)
 			{
+				ret = DS18B20_convertTemperature(dev, 0);
 				for(int x=56; x>=0; x-=8)
 				{
 					intToHexStr(dev[0].address>>x, msg_ptr);
@@ -504,18 +283,27 @@ int main(void)
 				}
 				VIRT_UART_Transmit(&huart0, "\nAddress=0x", sizeof("\nAddress=0x"));
 				VIRT_UART_Transmit(&huart0, message_address, sizeof(message_address));
-				VIRT_UART_Transmit(&huart0, "\n", sizeof("\n"));
 
-				msg_ptr = message_address;
-				for(int x=56; x>=0; x-=8)
+				if(ret != EOK)
 				{
-					intToHexStr(dev[0].rom_code>>x, msg_ptr);
-					msg_ptr +=2;
+					VIRT_UART_Transmit(&huart0, "\nwire1_convertT() FAILED", sizeof("\nwire1_convertT() FAILED"));
 				}
-				VIRT_UART_Transmit(&huart0, "\nRomCode=0x", sizeof("\nRomCode=0x"));
-				VIRT_UART_Transmit(&huart0, message_address, sizeof(message_address));
-				VIRT_UART_Transmit(&huart0, "\n", sizeof("\n"));
+				else
+				{
+					int16_t temperature;
+					ret = DS18B20_getTemperature(dev, &temperature);
+
+					if(ret != EOK)
+					{
+						VIRT_UART_Transmit(&huart0, "\nwire1_getT() FAILED", sizeof("\nwire1_convertT() FAILED"));
+					}
+				}
 			}
+			else if(ret < 0)
+			{
+
+			}
+			break;
 		default:
 			VIRT_UART_Transmit(&huart0, VirtUart0ChannelBuffRx, VirtUart0ChannelRxSize);
 			break;
@@ -778,20 +566,15 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-	//One shot timer mode!
-//	if(HAL_TIM_Base_Stop_IT(htim) != HAL_OK)
-//	{
-//		log_err("htim Stop_IT failed.\r\n");
-//		Error_Handler();
-//	}
-	if(htim == &htim5)
-	{
-		htim5.Instance->DIER &= ~TIM_DIER_UIE;	//Disable TIM5 IRQ
-		wire_timeout = 1;
-	}
-}
+//Removed IRQ and use free running clock as IRQ and timer restart incurs 3uS delay -_-
+//void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+//{
+//
+////	if(htim == &htim5)
+////	{
+////		htim5.Instance->DIER &= ~TIM_DIER_UIE;	//Disable TIM5 IRQ
+////	}
+//}
 
 void VIRT_UART0_RxCpltCallback(VIRT_UART_HandleTypeDef *huart)
 {
