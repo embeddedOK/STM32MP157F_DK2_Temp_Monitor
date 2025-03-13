@@ -108,6 +108,7 @@ void BSP_main(BSP_ARGS *argv)
 		  &DS18B20_wire1_setOne,
 		  &DS18B20_wire1_read
 	};
+	uint8_t dev_cnt = 0;
 	//Assign device specific function pointers
 	while (1)
 	{
@@ -120,79 +121,39 @@ void BSP_main(BSP_ARGS *argv)
 			switch (VirtUart0ChannelBuffRx[0])
 			{
 			case '0' :
-				ret = DS18B20_resetPulse(dev);
-				uint8_t message0[] = "Send WIRE1 Reset:  ";
-				message0[sizeof(message0)-1] = ret+48;
-				VIRT_UART_Transmit(&huart0, message0, sizeof(message0));
-				break;
-
-			case '1' :
-				DS18B20_sendBusBit(dev, 1);
-				uint8_t message1[] = "Send WIRE1 One";
-				VIRT_UART_Transmit(&huart0, message1, sizeof(message1));
-				break;
-
-			case '2' :
-				DS18B20_sendBusBit(dev, 0);
-				uint8_t message2[] = "Send WIRE1 Zero";
-				VIRT_UART_Transmit(&huart0, message2, sizeof(message2));
-				break;
-
-			case '3' :
-				DS18B20_sendBusBit(dev, 0);
-				DS18B20_sendBusBit(dev, 1);
-				DS18B20_sendBusBit(dev, 0);
-				uint8_t message3[] = "Send WIRE1 Zero/One/Zero";
-				VIRT_UART_Transmit(&huart0, message3, sizeof(message3));
-				break;
-
-			case '4' :
-				DS18B20_wire1_debugToggle(dev);
-				uint8_t message4[] = "Send debug toggle  ";
-				VIRT_UART_Transmit(&huart0, message4, sizeof(message4));
-				break;
-
-			case '5':
 				uint8_t message_address[16];
 				uint8_t *msg_ptr = message_address;
 
 				ret = DS18B20_init(dev, &dev_fptrs, DS18B20_MAX_DEVICES);
-				uint8_t message5[] = "Send wire1_init(): Num Dev = ";
-
+				VIRT_UART_Transmit(&huart0, "Send wire1_init(): ", sizeof("Send wire1_init(): "));
 				intToHexStr(ret, msg_ptr);
-				VIRT_UART_Transmit(&huart0, message5, sizeof(message5));
-				VIRT_UART_Transmit(&huart0, message_address, 2);
 
-				if(ret > 0)
+				if(ret >= 0)
 				{
-					ret = DS18B20_convertTemperature(dev, 0);
-					for(int x=56; x>=0; x-=8)
+					dev_cnt = ret;
+					VIRT_UART_Transmit(&huart0, "Num Dev = 0x", sizeof("Num Dev = 0x"));
+					VIRT_UART_Transmit(&huart0, message_address, 2);
+					for(int x=0; x< dev_cnt; x++)
 					{
-						intToHexStr(dev[0].address>>x, msg_ptr);
-						msg_ptr +=2;
-					}
-					VIRT_UART_Transmit(&huart0, "\nAddress=0x", sizeof("\nAddress=0x"));
-					VIRT_UART_Transmit(&huart0, message_address, sizeof(message_address));
-
-					if(ret != EOK)
-					{
-						VIRT_UART_Transmit(&huart0, "\nwire1_convertT() FAILED", sizeof("\nwire1_convertT() FAILED"));
-					}
-					else
-					{
-						int16_t temperature;
-						ret = DS18B20_getTemperature(dev, &temperature);
-
-						if(ret != EOK)
+						msg_ptr = message_address;
+						intToHexStr(x, msg_ptr);
+						VIRT_UART_Transmit(&huart0, "\nDevice 0x", sizeof("\nDevice 0x"));
+						VIRT_UART_Transmit(&huart0, message_address, 2);
+						for(int y=56; y>=0; y-=8)
 						{
-							VIRT_UART_Transmit(&huart0, "\nwire1_getT() FAILED", sizeof("\nwire1_convertT() FAILED"));
+							intToHexStr(dev[x].address>>y, msg_ptr);
+							msg_ptr +=2;
 						}
+						VIRT_UART_Transmit(&huart0, " Address=0x", sizeof("\nAddress=0x"));
+						VIRT_UART_Transmit(&huart0, message_address, sizeof(message_address));
 					}
 				}
-				else if(ret < 0)
+				else
 				{
-
+					VIRT_UART_Transmit(&huart0, "ERROR = 0x", sizeof("ERROR = 0x"));
+					VIRT_UART_Transmit(&huart0, message_address, 2);
 				}
+
 				break;
 			default:
 				VIRT_UART_Transmit(&huart0, VirtUart0ChannelBuffRx, VirtUart0ChannelRxSize);
