@@ -211,7 +211,7 @@ void BSP_main(BSP_ARGS *argv)
 
 					VIRT_UART_Transmit(&huart0, " Temperature = 0x", sizeof(" Temperature = 0x"));
 					msg_ptr = message_address;
-					intToHexStr(temperature.whole, msg_ptr);
+					intToHexStr(temperature.integer, msg_ptr);
 					VIRT_UART_Transmit(&huart0, message_address, 2);
 				}
 				break;
