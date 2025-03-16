@@ -57,17 +57,24 @@ void DS18B20_delayUS(uint32_t delay)
 }
 
 //#define wire1_setZero()	(WIRE1_THERM_GPIO_Port->BSRR |= (WIRE1_THERM_Pin<<16))
-void DS18B20_wire1_setZero(void)
+void DS18B20_wire1_setBus(uint8_t value)
 {
-	(WIRE1_THERM_GPIO_Port->MODER |= (1<<28));
+	if(value)
+	{
+		(WIRE1_THERM_GPIO_Port->MODER &= ~(3<<28));
+	}
+	else
+	{
+		(WIRE1_THERM_GPIO_Port->MODER |= (1<<28));
+	}
+}
+
+void DS18B20_wire1_enableParasitePower(uint8_t value)
+{
+// Parasite Power not used
+	return;
 }
 //0x4000
-
-//#define wire1_setOne()  (WIRE1_THERM_GPIO_Port->BSRR |= (WIRE1_THERM_Pin))
-void DS18B20_wire1_setOne(void)
-{
-	(WIRE1_THERM_GPIO_Port->MODER &= ~(3<<28));
-}
 
 uint8_t DS18B20_wire1_read(void)
 {
@@ -76,13 +83,96 @@ uint8_t DS18B20_wire1_read(void)
 
 DS18B20_wire1_interface wire1_fptrs =
 {
-		&DS18B20_delayUS,
-		&DS18B20_wire1_setZero,
-		&DS18B20_wire1_setOne,
-		&DS18B20_wire1_read,
-		0
+	.delayUS = &DS18B20_delayUS,
+	.setBus  = &DS18B20_wire1_setBus,
+	.enableParasitePower = &DS18B20_wire1_enableParasitePower,
+	.read = &DS18B20_wire1_read,
+	.in_use = 0
 };
 DS18B20 devices[DS18B20_MAX_DEVICES] = {0};
+
+int8_t DS18B20_convertDevice(DS18B20 *devices, uint8_t dev_cnt)
+{
+	int8_t ret;
+	uint8_t message_address[16];
+	uint8_t *msg_ptr = message_address;
+	VIRT_UART_Transmit(&huart0, "\nStart Temperature Conversion per device", sizeof("\nStart Temperature Conversion per device"));
+
+	for(int x=0; x< dev_cnt; x++)
+	{
+		ret = DS18B20_convertTemperatureDevice(&devices[x]);
+		VIRT_UART_Transmit(&huart0, "\nDev 0x", sizeof("\nDev 0x"));
+		intToHexStr(x, msg_ptr);
+		VIRT_UART_Transmit(&huart0, message_address, 2);
+		if(ret != DS18B20_OK)
+		{
+			VIRT_UART_Transmit(&huart0, " Error = 0x", sizeof(" Error = 0x"));
+			msg_ptr = message_address;
+			intToHexStr(ret, msg_ptr);
+			VIRT_UART_Transmit(&huart0, message_address, 2);
+			return ret;
+		}
+		else
+		{
+			VIRT_UART_Transmit(&huart0, " Success", sizeof(" Success"));
+		}
+	}
+	return ret;
+}
+int8_t DS18B20_convertAll(DS18B20 *devices)
+{
+	int8_t ret;
+	uint8_t message_address[16];
+	uint8_t *msg_ptr = message_address;
+	VIRT_UART_Transmit(&huart0, "\nStart Temperature Conversion All", sizeof("\nStart Temperature Conversion All"));
+	ret = DS18B20_convertTemperatureAll(&devices[0]);
+	if(ret != DS18B20_OK)
+	{
+		VIRT_UART_Transmit(&huart0, " Error = 0x", sizeof(" Error = 0x"));
+		msg_ptr = message_address;
+		intToHexStr(ret, msg_ptr);
+		VIRT_UART_Transmit(&huart0, message_address, 2);
+		return ret;
+	}
+	else
+	{
+		VIRT_UART_Transmit(&huart0, "\nSuccess", sizeof("\nSuccess"));
+	}
+	return ret;
+}
+
+int8_t DS18B20_printTemperature(DS18B20 *devices, uint8_t dev_cnt)
+{
+	int8_t ret;
+	uint8_t message_address[16];
+	uint8_t *msg_ptr = message_address;
+	VIRT_UART_Transmit(&huart0, "\nRead Temperatures", sizeof("\nRead Temperatures"));
+	for(int x=0; x<dev_cnt; x++)
+	{
+
+		ret = DS18B20_getTemperature(&devices[x]);
+		VIRT_UART_Transmit(&huart0, "\nDev 0x", sizeof("\nDev 0x"));
+
+		intToHexStr(x, msg_ptr);
+		VIRT_UART_Transmit(&huart0, message_address, 2);
+		if(ret != DS18B20_OK)
+		{
+			VIRT_UART_Transmit(&huart0, " Error = 0x", sizeof(" Error = 0x"));
+			msg_ptr = message_address;
+			intToHexStr(ret, msg_ptr);
+			VIRT_UART_Transmit(&huart0, message_address, 2);
+			return ret;
+		}
+		else
+		{
+			VIRT_UART_Transmit(&huart0, " Temperature = 0x", sizeof(" Temperature = 0x"));
+			msg_ptr = message_address;
+			intToHexStr(devices[x].temperature_integer, msg_ptr);
+			VIRT_UART_Transmit(&huart0, message_address, 2);
+		}
+	}
+	return ret;
+}
 
 void BSP_main(BSP_ARGS *argv)
 {
@@ -93,7 +183,7 @@ void BSP_main(BSP_ARGS *argv)
 	BSP_htim5->Instance->ARR = 0xFFFFFFFF;
 	BSP_htim5->Instance->CR1 |= TIM_CR1_CEN;
 	//Set WIRE1 GPIO as Input
-	DS18B20_wire1_setOne();
+	DS18B20_wire1_setBus(1);
 	//Set WIRE1 GPIO Low when output
 	WIRE1_THERM_GPIO_Port->BSRR |= (WIRE1_THERM_Pin<<16);
 
@@ -109,9 +199,9 @@ void BSP_main(BSP_ARGS *argv)
 		Error_Handler();
 	}
 
-
-
 	uint8_t dev_cnt = 0;
+	uint8_t second_reads = 0;
+	uint16_t second_cnt = 0;
 	//Assign device specific function pointers
 	while (1)
 	{
@@ -124,7 +214,7 @@ void BSP_main(BSP_ARGS *argv)
 			VirtUart0RxMsg = RESET;
 			switch (VirtUart0ChannelBuffRx[0])
 			{
-			case '0' :
+			case '0' :	//Enumerate
 				ret = DS18B20_init(devices, &wire1_fptrs, DS18B20_MAX_DEVICES);
 				VIRT_UART_Transmit(&huart0, "\nSend wire1_init(): ", sizeof("\nSend wire1_init(): "));
 				intToHexStr(ret, msg_ptr);
@@ -157,72 +247,40 @@ void BSP_main(BSP_ARGS *argv)
 
 				break;
 
-			case '1':
-				VIRT_UART_Transmit(&huart0, "\nStart Temperature Conversion per device", sizeof("\nStart Temperature Conversion per device"));
-
-				for(int x=0; x< dev_cnt; x++)
-				{
-					ret = DS18B20_convertTemperatureDevice(&devices[x],0);
-					VIRT_UART_Transmit(&huart0, "\nDev 0x", sizeof("\nDev 0x"));
-					intToHexStr(x, msg_ptr);
-					VIRT_UART_Transmit(&huart0, message_address, 2);
-					if(ret != DS18B20_OK)
-					{
-						VIRT_UART_Transmit(&huart0, " Error = 0x", sizeof(" Error = 0x"));
-						msg_ptr = message_address;
-						intToHexStr(ret, msg_ptr);
-						VIRT_UART_Transmit(&huart0, message_address, 2);
-					}
-					else
-					{
-						VIRT_UART_Transmit(&huart0, " Success", sizeof(" Success"));
-					}
-				}
-
+			case '1':	//Start device conversions 1 device at a time
+				DS18B20_convertDevice(devices, dev_cnt);
 				break;
 
-			case '2':
-				VIRT_UART_Transmit(&huart0, "\nStart Temperature Conversion All", sizeof("\nStart Temperature Conversion All"));
-				ret = DS18B20_convertTemperatureAll(&devices[0]);
-				if(ret != DS18B20_OK)
-				{
-					VIRT_UART_Transmit(&huart0, " Error = 0x", sizeof(" Error = 0x"));
-
-					msg_ptr = message_address;
-					intToHexStr(ret, msg_ptr);
-					VIRT_UART_Transmit(&huart0, message_address, 2);
-				}
-				else
-				{
-					VIRT_UART_Transmit(&huart0, "\nSuccess", sizeof("\nSuccess"));
-				}
+			case '2':	//Start device conversions all at once
+				DS18B20_convertAll(devices);
 				break;
 
-			case '3':
-				VIRT_UART_Transmit(&huart0, "\nRead Temperatures", sizeof("\nRead Temperatures"));
-				for(int x=0; x<dev_cnt; x++)
-				{
-					DS18B20_TEMPERATURE temperature;
-					ret = DS18B20_getTemperature(&devices[x], &temperature);
-					VIRT_UART_Transmit(&huart0, "\nDev 0x", sizeof("\nDev 0x"));
-
-					intToHexStr(x, msg_ptr);
-					VIRT_UART_Transmit(&huart0, message_address, 2);
-
-					VIRT_UART_Transmit(&huart0, " Temperature = 0x", sizeof(" Temperature = 0x"));
-					msg_ptr = message_address;
-					intToHexStr(temperature.integer, msg_ptr);
-					VIRT_UART_Transmit(&huart0, message_address, 2);
-				}
+			case '3': //Read all device temperatures
+				DS18B20_printTemperature(devices, dev_cnt);
 				break;
 
+			case '4':	//Toggle 1second Temp reads
+				second_reads ^= 1;
+				break;
 			default:
 				VIRT_UART_Transmit(&huart0, VirtUart0ChannelBuffRx, VirtUart0ChannelRxSize);
 				break;
 			}
 			VIRT_UART_Transmit(&huart0, "\n", sizeof("\n"));
-
 		}
+		second_cnt++;
+		if(second_cnt == 1000)
+		{
+			second_cnt = 0;
+			if(second_reads)
+			{
+				if(DS18B20_convertAll(devices) == DS18B20_OK)
+				{
+					DS18B20_printTemperature(devices, dev_cnt);
+				}
+			}
+		}
+		HAL_Delay(1);
 	}
 }
 
