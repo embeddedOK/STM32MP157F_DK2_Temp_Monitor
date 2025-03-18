@@ -89,9 +89,11 @@ DS18B20_wire1_interface wire1_fptrs =
 	.read = &DS18B20_wire1_read,
 	.in_use = 0
 };
-DS18B20 devices[DS18B20_MAX_DEVICES] = {0};
+//TODO: Map these into shared memory and change from VIRT_UART to direct memory access
+DS18B20 devices[DS18B20_MAX_DEVICES] = {0};			// DS18B20 devices array to store found devices
+DS18B20 alarm_devices[DS18B20_MAX_DEVICES] = {0};	// DS18B20 devices array to store devices with alarm set
 
-int8_t DS18B20_convertDevice(DS18B20 *devices, uint8_t dev_cnt)
+int8_t BSP_DS18B20_convertDevice(DS18B20 *devices, uint8_t dev_cnt)
 {
 	int8_t ret;
 	uint8_t message_address[16];
@@ -119,7 +121,7 @@ int8_t DS18B20_convertDevice(DS18B20 *devices, uint8_t dev_cnt)
 	}
 	return ret;
 }
-int8_t DS18B20_convertAll(DS18B20 *devices)
+int8_t BSP_DS18B20_convertAll(DS18B20 *devices)
 {
 	int8_t ret;
 	uint8_t message_address[16];
@@ -140,8 +142,43 @@ int8_t DS18B20_convertAll(DS18B20 *devices)
 	}
 	return ret;
 }
-
-int8_t DS18B20_printTemperature(DS18B20 *devices, uint8_t dev_cnt)
+int8_t BSP_DS18B20_readAlarms(DS18B20 *devices)
+{
+	int8_t ret;
+	uint8_t message_address[16];
+	uint8_t *msg_ptr = message_address;
+	VIRT_UART_Transmit(&huart0, "\nScan For Alarmed Devices", sizeof("\nScan For Alarmed Devices"));
+	ret = DS18B20_searchAlarm(&devices[0], &wire1_fptrs, DS18B20_MAX_DEVICES);
+	if(ret < 0 )
+	{
+		VIRT_UART_Transmit(&huart0, " Error =0x", sizeof(" Error =0x"));
+		intToHexStr(ret, msg_ptr);
+		VIRT_UART_Transmit(&huart0, message_address, 2);
+		return ret;
+	}
+	else
+	{
+		VIRT_UART_Transmit(&huart0, " Found =0x", sizeof(" Found =0x"));
+		intToHexStr(ret, msg_ptr);
+		VIRT_UART_Transmit(&huart0, message_address, 2);
+		for(int x=0; x<ret; x++)
+		{
+			msg_ptr = message_address;
+			intToHexStr(x, msg_ptr);
+			VIRT_UART_Transmit(&huart0, "\nDevice 0x", sizeof("\nDevice 0x"));
+			VIRT_UART_Transmit(&huart0, message_address, 2);
+			for(int y=56; y>=0; y-=8)
+			{
+				intToHexStr(devices[x].address>>y, msg_ptr);
+				msg_ptr +=2;
+			}
+			VIRT_UART_Transmit(&huart0, " Address=0x", sizeof("\nAddress=0x"));
+			VIRT_UART_Transmit(&huart0, message_address, sizeof(message_address));
+		}
+	}
+	return ret;
+}
+int8_t BSP_DS18B20_printTemperature(DS18B20 *devices, uint8_t dev_cnt)
 {
 	int8_t ret;
 	uint8_t message_address[16];
@@ -202,6 +239,7 @@ void BSP_main(BSP_ARGS *argv)
 	uint8_t dev_cnt = 0;
 	uint8_t second_reads = 0;
 	uint16_t second_cnt = 0;
+	uint8_t alarms_read = 0;
 	//Assign device specific function pointers
 	while (1)
 	{
@@ -237,6 +275,10 @@ void BSP_main(BSP_ARGS *argv)
 						}
 						VIRT_UART_Transmit(&huart0, " Address=0x", sizeof("\nAddress=0x"));
 						VIRT_UART_Transmit(&huart0, message_address, sizeof(message_address));
+						devices[x].th = 85;
+						devices[x].tl = 5;
+						devices[x].resolution = DS18B20_RESOLUTION_9BITS;
+						DS18B20_writeScratchpad(&devices[x]);
 					}
 				}
 				else
@@ -248,19 +290,37 @@ void BSP_main(BSP_ARGS *argv)
 				break;
 
 			case '1':	//Start device conversions 1 device at a time
-				DS18B20_convertDevice(devices, dev_cnt);
+				BSP_DS18B20_convertDevice(devices, dev_cnt);
 				break;
 
 			case '2':	//Start device conversions all at once
-				DS18B20_convertAll(devices);
+				BSP_DS18B20_convertAll(devices);
 				break;
 
 			case '3': //Read all device temperatures
-				DS18B20_printTemperature(devices, dev_cnt);
+				BSP_DS18B20_printTemperature(devices, dev_cnt);
 				break;
 
-			case '4':	//Toggle 1second Temp reads
+			case '4': // Toggle 1second Temp reads
 				second_reads ^= 1;
+				break;
+
+			case '5': //Set device[0] alarm th to 26C
+				devices[0].th = 26;
+				VIRT_UART_Transmit(&huart0, "\nSet DEV 0 TH = 26C", sizeof("\nSet DEV 0 TH = 26C"));
+				ret = DS18B20_writeScratchpad(&devices[0]);
+				if(ret != DS18B20_OK)
+				{
+					VIRT_UART_Transmit(&huart0, " Error", sizeof(" Error"));
+				}
+				else
+				{
+					VIRT_UART_Transmit(&huart0, " Success", sizeof(" Success"));
+				}
+				break;
+
+			case '6': //Toggle 1 second alarm Temp reads"
+				alarms_read ^= 1;
 				break;
 			default:
 				VIRT_UART_Transmit(&huart0, VirtUart0ChannelBuffRx, VirtUart0ChannelRxSize);
@@ -274,10 +334,14 @@ void BSP_main(BSP_ARGS *argv)
 			second_cnt = 0;
 			if(second_reads)
 			{
-				if(DS18B20_convertAll(devices) == DS18B20_OK)
+				if(BSP_DS18B20_convertAll(devices) == DS18B20_OK)
 				{
-					DS18B20_printTemperature(devices, dev_cnt);
+					BSP_DS18B20_printTemperature(devices, dev_cnt);
 				}
+			}
+			if(alarms_read)
+			{
+				BSP_DS18B20_readAlarms(alarm_devices);
 			}
 		}
 		HAL_Delay(1);
